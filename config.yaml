@@ -1,0 +1,119 @@
+task: # Тут переключение между задачами, обе сразу нельзя, в общем случае заменить на регрессию и классификацию
+  titanic: True
+  house_pricing: False
+
+path: # Пути
+  train_titanic: ./titanic/train.csv
+  test_titanic: ./titanic/test.csv
+  train_pricing: ./pricing/train.csv
+  test_pricing: ./pricing/test.csv
+  output_titanic: ./titanic/submission.csv
+  output_pricing: ./pricing/submission.csv
+  models: ./checkpoints
+  data_checkpoint: ./checkpoints
+
+mode: # Тут включаются режимы (тренировка, инференс) и модели. Можно сразу включать и тренировку и инференс для всех подходящих моделей
+  is_train: True
+  is_inference: True
+  LinearRegression: False # Классификация недоступна
+  Lasso: False # Классификация недоступна
+  Ridge: False # Классификация недоступна
+  ElasticNet: False # Классификация недоступна
+  KNN: False
+  DecisionTree: False
+  RandomForest: False
+  CatBoost: False
+  XGB: False
+  LGBM: False
+  DNN: False # Регрессия недоступна
+
+preprocessing:
+  is_normalization: True
+
+seed: 42
+
+# Для титаника statified, для house_pricing KFold
+validation:
+  StratifiedKFold:
+    n_splits: 10
+    shuffle: True
+    random_state: 42
+  KFold:
+    n_splits: 10
+    shuffle: True
+    random_state: 42
+
+# Для титаника только voting, для house_pricing и то и то, но стакинг предпочитетельнее
+inference:
+  ensemble:
+    is_stacking: True
+    is_voting: False
+    threshold: 0.4 # for soft
+
+# Гиперпараметры моделей, по включенной задаче определяется какой из видов модели включить (классификатор или регрессор)
+params:
+  LinearRegression:
+    fit_intercept: True
+    copy_X: True
+    tol: 1e-06
+    n_jobs: 8
+    positive: False
+  Lasso:
+    alpha: 1.0
+    max_iter: 10000000
+  Ridge:
+    alpha: 1.0
+  ElasticNet:
+    alpha: 1.0
+
+  # Подбирал руками, опирясь на то что GridSearch дал
+  KNN:
+    n_neighbors: 5 # titanic - 5
+    weights: 'uniform' # titanic - 'uniform'
+    algorithm: 'auto' # titanic - 'auto'
+    leaf_size: 1 # titanic - 1
+    p: 3 # titanic - 3
+    metric: 'cosine' # titanic - 'cosine'
+    n_jobs: 12 # titanic - 12
+  DecisionTreeClassifier:
+    criterion: 'entropy' # titanic - 'entropy'
+    max_depth: 10 # titanic - 10
+    min_samples_split: 2 # titanic - 2
+    min_samples_leaf: 6 # titanic - 6
+    ccp_alpha: 0.0 # titanic - 0.0
+    random_state: 42
+  RandomForestClassifier:
+    n_estimators: 100 # titanic - 100
+    criterion: 'entropy' # titanic - 'entropy'
+    min_samples_split: 2 # titanic - 2
+    min_samples_leaf: 4 # titanic - 4
+    max_features: 'sqrt' # titanic - 'sqrt'
+    max_depth: 5 # titanic - 5
+  CatBoostClassifier:
+    iterations: 500 # titanic - 500
+    depth: 5 # titanic - 5
+    l2_leaf_reg: 10 # titanic - 10
+    learning_rate: 0.05 # titanic -  0.05
+  XGBClassifier:
+    colsample_bytree: 0.8 # titanic - 0.8
+    gamma: 0.1 # titanic - 0.1
+    learning_rate: 0.01 # titanic - 0.01
+    max_depth: 7 # titanic - 7
+    n_estimators: 300 # titanic - 300
+    subsample: 1 # titanic - 1
+  LGBMClassifier:
+    colsample_bytree: 1.0 # titanic - 1.0
+    learning_rate: 0.05 # titanic - 0.05
+    max_depth: 5 # titanic - 5
+    min_child_samples: 30 # titanic - 30
+    n_estimators: 500 # titanic - 500
+    num_leaves: 31 # titanic - 31
+    subsample: 0.8 # titanic - 0.8
+    subsample_freq: 1 # titanic - 1
+  DNN:
+    hidden_layers: (64, 32)
+    dropout_rate: 0.2
+    is_regression: false
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.001
