@@ -48,7 +48,13 @@ class Solver:
             )
         )
 
-    def _build_samplewise_cache_tag(self, center: str, include_region_feature: bool) -> str:
+    def _build_samplewise_cache_tag(
+        self,
+        center: str,
+        include_region_feature: bool,
+        agg_features: list[str],
+        append_first_derivative: bool,
+    ) -> str:
         crop_ranges_by_center = getattr(
             self.config.preprocessing,
             "crop_ranges_by_center",
@@ -64,8 +70,9 @@ class Solver:
 
         payload = {
             "center": str(center),
-            "agg_method": str(self.config.data.sample_agg_method),
+            "agg_features": [str(item) for item in agg_features],
             "include_region_feature": bool(include_region_feature),
+            "append_first_derivative": bool(append_first_derivative),
             "preprocessing_enabled": bool(self.config.preprocessing.enabled),
             "crop_range_for_this_center": list(center_crop),
             "despike_threshold": float(self.config.preprocessing.despike_threshold),
@@ -95,9 +102,13 @@ class Solver:
             getattr(self.config.data, "force_rebuild_samplewise_cache", False)
         )
 
-        include_region_feature = bool(getattr(self.config.data, "include_region_feature", True))
+        include_region_feature = bool(getattr(self.config.data, "include_region_feature", False))
+        append_first_derivative = bool(getattr(self.config.data, "append_first_derivative", True))
+        agg_features_cfg = getattr(self.config.data, "sample_agg_features", ["median"])
+        agg_features = [str(value) for value in agg_features_cfg]
         centers_to_run_cfg = getattr(self.config.data, "centers_to_run", [1500, 2900])
         centers_to_run = [str(value) for value in centers_to_run_cfg]
+        cv_strategy = str(getattr(self.config.training, "cv_strategy", "stratified_group"))
 
         print("[STEP] Loading raw dataset...")
         metadata_df, raw_data = self.dataset.load(
@@ -124,6 +135,10 @@ class Solver:
             "n_unique_mice": int(metadata_df["mouse_id"].nunique()),
             "class_distribution": metadata_df["label_name"].value_counts().to_dict(),
             "center_distribution": metadata_df["center"].value_counts().to_dict(),
+            "sample_agg_features": agg_features,
+            "append_first_derivative": append_first_derivative,
+            "include_region_feature": include_region_feature,
+            "cv_strategy": cv_strategy,
             "results_by_center": {},
         }
 
@@ -132,6 +147,8 @@ class Solver:
             if center_df.empty:
                 print(f"[WARN] No files found for center={center}")
                 continue
+
+            center_output_dir = ensure_dir(self.output_dir / f"center_{center}")
 
             print(f"\n{'=' * 20} CENTER {center} {'=' * 20}")
             print(f"[INFO] Files in center {center}: {len(center_df)}")
@@ -143,19 +160,25 @@ class Solver:
 
             wave_sw, x_sw, y_sw, groups_sw, file_ids_sw = self.dataset.build_samplewise_dataset(
                 center_preprocessor,
-                agg_method=str(self.config.data.sample_agg_method),
+                agg_methods=agg_features,
                 use_processed=bool(self.config.preprocessing.enabled),
                 use_cache=use_samplewise_cache,
                 force_rebuild=force_rebuild_samplewise_cache,
-                cache_tag=self._build_samplewise_cache_tag(center, include_region_feature),
+                cache_tag=self._build_samplewise_cache_tag(
+                    center=center,
+                    include_region_feature=include_region_feature,
+                    agg_features=agg_features,
+                    append_first_derivative=append_first_derivative,
+                ),
                 center_filter=center,
                 include_region_feature=include_region_feature,
+                append_first_derivative=append_first_derivative,
             )
-            del wave_sw, file_ids_sw
 
             print(f"[INFO] Samplewise X shape for center {center}: {x_sw.shape}")
             print(f"[INFO] Samplewise y shape for center {center}: {y_sw.shape}")
             print(f"[INFO] Unique groups for center {center}: {len(set(groups_sw))}")
+            print(f"[INFO] Samplewise files for center {center}: {len(file_ids_sw)}")
 
             print(f"[STEP] Running samplewise CV for center={center}...")
             sw_results, sw_results_df = evaluate_group_cv(
@@ -165,20 +188,25 @@ class Solver:
                 models,
                 n_splits=int(self.config.training.group_kfold_splits),
                 dataset_name=f"samplewise_center{center}",
+                cv_strategy=cv_strategy,
+                random_state=int(self.config.project.seed),
             )
 
             print(f"\n=== SAMPLEWISE RESULTS | CENTER {center} ===")
-            print(sw_results)
-            print(sw_results_df)
+            print(sw_results_df.sort_values("oof_macro_f1", ascending=False))
 
             sw_results_df.to_csv(
-                self.output_dir / f"cv_results_samplewise_center{center}.csv",
+                center_output_dir / f"cv_results_samplewise_center{center}.csv",
                 index=False,
             )
+            save_json(sw_results, center_output_dir / f"samplewise_results_center{center}.json")
+
+            best_row = sw_results_df.sort_values("oof_macro_f1", ascending=False).iloc[0].to_dict()
 
             final_report["results_by_center"][f"center_{center}"] = {
                 "n_files": int(len(center_df)),
                 "class_distribution": center_df["label_name"].value_counts().to_dict(),
+                "best_model": best_row,
                 "results": sw_results,
             }
 

@@ -23,6 +23,8 @@ INV_CLASS_MAP = {value: key for key, value in CLASS_MAP.items()}
 BRAIN_REGIONS = ("cortex", "striatum", "cerebellum", "unknown")
 REGION_TO_INDEX = {name: idx for idx, name in enumerate(BRAIN_REGIONS)}
 
+SUPPORTED_SAMPLE_AGG_FEATURES = ("median", "mean", "std", "q25", "q75", "min", "max")
+
 
 @dataclass
 class FileMeta:
@@ -184,11 +186,42 @@ class RamanDataset:
 
     @staticmethod
     def aggregate_spectra(x: np.ndarray, method: str = "median") -> np.ndarray:
+        method = str(method).lower()
+
         if method == "median":
             return np.nanmedian(x, axis=0)
         if method == "mean":
             return np.nanmean(x, axis=0)
-        raise ValueError(f"Unknown aggregation method: {method}")
+        if method == "std":
+            return np.nanstd(x, axis=0)
+        if method == "q25":
+            return np.nanpercentile(x, 25, axis=0)
+        if method == "q75":
+            return np.nanpercentile(x, 75, axis=0)
+        if method == "min":
+            return np.nanmin(x, axis=0)
+        if method == "max":
+            return np.nanmax(x, axis=0)
+
+        raise ValueError(
+            f"Unknown aggregation method: {method}. Supported: {SUPPORTED_SAMPLE_AGG_FEATURES}"
+        )
+
+    @classmethod
+    def aggregate_feature_blocks(
+        cls,
+        x: np.ndarray,
+        methods: List[str],
+    ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        block_map: Dict[str, np.ndarray] = {}
+        features = []
+
+        for method in methods:
+            block = cls.aggregate_spectra(x, method=method)
+            block_map[method] = block
+            features.append(block)
+
+        return np.concatenate(features, axis=0), block_map
 
     @staticmethod
     def build_region_onehot(regions: List[str]) -> np.ndarray:
@@ -198,6 +231,22 @@ class RamanDataset:
             col_idx = REGION_TO_INDEX[region_name]
             x_region[row_idx, col_idx] = 1.0
         return x_region
+
+    @staticmethod
+    def build_feature_names(
+        wave: np.ndarray,
+        agg_methods: List[str],
+        append_first_derivative: bool,
+        include_region_feature: bool,
+    ) -> List[str]:
+        names: List[str] = []
+        for method in agg_methods:
+            names.extend([f"{method}__{float(w):.4f}" for w in wave])
+        if append_first_derivative:
+            names.extend([f"d1_median__{float(w):.4f}" for w in wave])
+        if include_region_feature:
+            names.extend([f"region__{region}" for region in BRAIN_REGIONS])
+        return names
 
     def load(
         self,
@@ -375,19 +424,33 @@ class RamanDataset:
         self,
         preprocessor: SpectraPreprocessor,
         agg_method: str = "median",
+        agg_methods: Optional[List[str]] = None,
         use_processed: bool = True,
         use_cache: bool = True,
         force_rebuild: bool = False,
         cache_tag: str = "default",
         center_filter: Optional[str] = None,
         include_region_feature: bool = True,
+        append_first_derivative: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
         if self.raw_data is None:
             raise RuntimeError("Call load() before building datasets")
 
+        if agg_methods is None:
+            agg_methods = [agg_method]
+        agg_methods = [str(method).lower() for method in agg_methods]
+
+        unsupported = sorted(set(agg_methods) - set(SUPPORTED_SAMPLE_AGG_FEATURES))
+        if unsupported:
+            raise ValueError(
+                f"Unsupported aggregation methods: {unsupported}. Supported: {SUPPORTED_SAMPLE_AGG_FEATURES}"
+            )
+
         center_name = "all" if center_filter is None else str(center_filter)
         safe_tag = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in cache_tag)
-        cache_path = self._get_cache_dir() / f"samplewise_{self.root_dir.name}_center{center_name}_{safe_tag}.joblib"
+        cache_path = self._get_cache_dir() / (
+            f"samplewise_{self.root_dir.name}_center{center_name}_{safe_tag}.joblib"
+        )
 
         if use_cache and cache_path.exists() and not force_rebuild:
             print(f"[CACHE] Loading samplewise dataset from: {cache_path}")
@@ -417,8 +480,14 @@ class RamanDataset:
             if len(x_pixels) == 0:
                 continue
 
-            x_agg = self.aggregate_spectra(x_pixels, method=agg_method)
-            x_spec_list.append(x_agg)
+            feature_vector, block_map = self.aggregate_feature_blocks(x_pixels, methods=agg_methods)
+
+            if append_first_derivative:
+                base_signal = block_map["median"] if "median" in block_map else block_map[agg_methods[0]]
+                d1 = np.gradient(base_signal, wave)
+                feature_vector = np.concatenate([feature_vector, d1], axis=0)
+
+            x_spec_list.append(feature_vector)
             y_list.append(item["meta"].label)
             groups.append(item["meta"].mouse_id)
             file_ids.append(file_id)
@@ -444,6 +513,12 @@ class RamanDataset:
             "y": np.array(y_list),
             "groups": np.array(groups),
             "file_ids": file_ids,
+            "feature_names": self.build_feature_names(
+                wave=wave_ref,
+                agg_methods=agg_methods,
+                append_first_derivative=append_first_derivative,
+                include_region_feature=include_region_feature,
+            ),
         }
 
         if use_cache:

@@ -6,9 +6,9 @@ paths:
   outputs: ./outputs
 
 data:
-  sample_agg_method: median
-
-  include_region_feature: true
+  sample_agg_features: [median, mean, std, q25, q75]
+  append_first_derivative: true
+  include_region_feature: false
   centers_to_run: [1500, 2900]
 
   use_raw_cache: true
@@ -39,6 +39,7 @@ preprocessing:
   normalization: l2
 
 training:
+  cv_strategy: stratified_group
   group_kfold_splits: 4
 
   datasets:
@@ -46,11 +47,11 @@ training:
     pixelwise: false
 
   models:
+    linear_svm: false
     pca_svm: false
     rf: true
-
-eda:
-  plot_raw_vs_processed_files: 3
+    extra_trees: true
+    logreg: false
 
 interpretation:
   rf_top_k: 30
