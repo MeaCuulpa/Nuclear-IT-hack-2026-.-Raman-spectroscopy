@@ -17,6 +17,24 @@ from sklearn.model_selection import GroupKFold
 
 from dataset import INV_CLASS_MAP
 
+try:
+    from sklearn.model_selection import StratifiedGroupKFold
+except Exception:  # pragma: no cover
+    StratifiedGroupKFold = None
+
+
+LABELS = sorted(INV_CLASS_MAP.keys())
+TARGET_NAMES = [INV_CLASS_MAP[i] for i in LABELS]
+
+
+def _make_cv(strategy: str, n_splits: int, random_state: int = 42):
+    strategy = (strategy or "group").lower()
+
+    if strategy == "stratified_group" and StratifiedGroupKFold is not None:
+        return StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    return GroupKFold(n_splits=n_splits)
+
 
 def evaluate_group_cv(
     x: np.ndarray,
@@ -25,13 +43,15 @@ def evaluate_group_cv(
     models: Dict[str, object],
     n_splits: int = 5,
     dataset_name: str = "samplewise",
+    cv_strategy: str = "stratified_group",
+    random_state: int = 42,
 ) -> Tuple[list[dict], pd.DataFrame]:
     unique_groups = np.unique(groups)
     n_splits = min(n_splits, len(unique_groups))
     if n_splits < 2:
-        raise ValueError("Not enough unique groups for GroupKFold")
+        raise ValueError("Not enough unique groups for grouped CV")
 
-    gkf = GroupKFold(n_splits=n_splits)
+    cv = _make_cv(cv_strategy, n_splits=n_splits, random_state=random_state)
     results = []
 
     for model_name, model in models.items():
@@ -39,8 +59,8 @@ def evaluate_group_cv(
         y_true_all = []
         y_pred_all = []
 
-        print(f"\n=== MODEL: {model_name} | DATASET: {dataset_name} ===")
-        for fold, (train_idx, valid_idx) in enumerate(gkf.split(x, y, groups=groups), start=1):
+        print(f"\n=== MODEL: {model_name} | DATASET: {dataset_name} | CV: {cv_strategy} ===")
+        for fold, (train_idx, valid_idx) in enumerate(cv.split(x, y, groups=groups), start=1):
             x_train, x_valid = x[train_idx], x[valid_idx]
             y_train, y_valid = y[train_idx], y[valid_idx]
 
@@ -49,31 +69,66 @@ def evaluate_group_cv(
 
             acc = accuracy_score(y_valid, pred)
             bacc = balanced_accuracy_score(y_valid, pred)
-            macro_f1 = f1_score(y_valid, pred, average="macro")
+            macro_f1 = f1_score(y_valid, pred, labels=LABELS, average="macro", zero_division=0)
 
-            print(f"Fold {fold}: acc={acc:.4f} | bacc={bacc:.4f} | macro_f1={macro_f1:.4f}")
-            fold_reports.append({"fold": fold, "acc": acc, "bacc": bacc, "macro_f1": macro_f1})
+            fold_class_dist = {
+                INV_CLASS_MAP[int(label)]: int((y_valid == label).sum()) for label in LABELS
+            }
+            print(
+                f"Fold {fold}: acc={acc:.4f} | bacc={bacc:.4f} | macro_f1={macro_f1:.4f} | valid_classes={fold_class_dist}"
+            )
+            fold_reports.append(
+                {
+                    "fold": fold,
+                    "acc": acc,
+                    "bacc": bacc,
+                    "macro_f1": macro_f1,
+                    "n_train": int(len(train_idx)),
+                    "n_valid": int(len(valid_idx)),
+                    "valid_class_distribution": fold_class_dist,
+                }
+            )
             y_true_all.extend(y_valid.tolist())
             y_pred_all.extend(pred.tolist())
 
         y_true_all = np.array(y_true_all)
         y_pred_all = np.array(y_pred_all)
 
+        oof_acc = accuracy_score(y_true_all, y_pred_all)
+        oof_bacc = balanced_accuracy_score(y_true_all, y_pred_all)
+        oof_macro_f1 = f1_score(
+            y_true_all,
+            y_pred_all,
+            labels=LABELS,
+            average="macro",
+            zero_division=0,
+        )
+
         results.append(
             {
                 "dataset": dataset_name,
                 "model": model_name,
+                "cv_strategy": cv_strategy,
                 "acc_mean": float(np.mean([row["acc"] for row in fold_reports])),
                 "acc_std": float(np.std([row["acc"] for row in fold_reports])),
                 "bacc_mean": float(np.mean([row["bacc"] for row in fold_reports])),
                 "bacc_std": float(np.std([row["bacc"] for row in fold_reports])),
                 "macro_f1_mean": float(np.mean([row["macro_f1"] for row in fold_reports])),
                 "macro_f1_std": float(np.std([row["macro_f1"] for row in fold_reports])),
-                "confusion_matrix": confusion_matrix(y_true_all, y_pred_all).tolist(),
+                "oof_acc": float(oof_acc),
+                "oof_bacc": float(oof_bacc),
+                "oof_macro_f1": float(oof_macro_f1),
+                "fold_reports": fold_reports,
+                "confusion_matrix": confusion_matrix(
+                    y_true_all,
+                    y_pred_all,
+                    labels=LABELS,
+                ).tolist(),
                 "classification_report": classification_report(
                     y_true_all,
                     y_pred_all,
-                    target_names=[INV_CLASS_MAP[i] for i in sorted(INV_CLASS_MAP)],
+                    labels=LABELS,
+                    target_names=TARGET_NAMES,
                     output_dict=True,
                     zero_division=0,
                 ),
@@ -85,12 +140,16 @@ def evaluate_group_cv(
             {
                 "dataset": row["dataset"],
                 "model": row["model"],
+                "cv_strategy": row["cv_strategy"],
                 "acc_mean": row["acc_mean"],
                 "acc_std": row["acc_std"],
                 "bacc_mean": row["bacc_mean"],
                 "bacc_std": row["bacc_std"],
                 "macro_f1_mean": row["macro_f1_mean"],
                 "macro_f1_std": row["macro_f1_std"],
+                "oof_acc": row["oof_acc"],
+                "oof_bacc": row["oof_bacc"],
+                "oof_macro_f1": row["oof_macro_f1"],
             }
             for row in results
         ]
