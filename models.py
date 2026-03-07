@@ -97,7 +97,7 @@ def _get_seed(config, default: int = 42) -> int:
 
 def _get_nested(node, path: str, default=None):
     current = node
-    for part in path.split("."):
+    for part in path.split('.'):
         if current is None or not hasattr(current, part):
             return default
         current = getattr(current, part)
@@ -105,7 +105,7 @@ def _get_nested(node, path: str, default=None):
 
 
 def get_center_training_cfg(config, center: str):
-    return _get_nested(config, f"training.centers.{center}", None)
+    return _get_nested(config, f'training.centers.{center}', None)
 
 
 def _get_center_or_global_value(config, center: str, path: str, fallback_path: str | None, default=None):
@@ -120,27 +120,34 @@ def _get_center_or_global_value(config, center: str, path: str, fallback_path: s
     return default
 
 
+def _get_param(config, center: str, model_name: str, param_name: str, fallback_path: str | None, default=None, overrides: dict | None = None):
+    if overrides and param_name in overrides:
+        return overrides[param_name]
+    center_path = f'{model_name}.{param_name}' if model_name else param_name
+    return _get_center_or_global_value(config, center, center_path, fallback_path, default)
+
+
 def is_model_enabled_for_center(config, center: str, model_name: str, default: bool = False) -> bool:
     center_cfg = get_center_training_cfg(config, center)
-    if center_cfg is not None and hasattr(center_cfg, "models") and hasattr(center_cfg.models, model_name):
+    if center_cfg is not None and hasattr(center_cfg, 'models') and hasattr(center_cfg.models, model_name):
         return bool(getattr(center_cfg.models, model_name))
 
-    training_models = _get_nested(config, "training.models", None)
+    training_models = _get_nested(config, 'training.models', None)
     if training_models is not None and hasattr(training_models, model_name):
         return bool(getattr(training_models, model_name))
 
     return default
 
 
-def _build_linear_svm(config, center: str):
+def _build_linear_svm(config, center: str, overrides: dict | None = None):
     return Pipeline(
         steps=[
-            ("scaler", StandardScaler()),
+            ('scaler', StandardScaler()),
             (
-                "svm",
+                'svm',
                 LinearSVC(
-                    C=float(_get_center_or_global_value(config, center, "linear_svm.C", "training.linear_svm.C", 1.0)),
-                    class_weight="balanced",
+                    C=float(_get_param(config, center, 'linear_svm', 'C', 'training.linear_svm.C', 1.0, overrides)),
+                    class_weight='balanced',
                     random_state=_get_seed(config),
                     max_iter=20000,
                 ),
@@ -149,20 +156,27 @@ def _build_linear_svm(config, center: str):
     )
 
 
-def _build_pca_svm(config, center: str):
+def _build_pca_svm(config, center: str, overrides: dict | None = None):
     from sklearn.decomposition import PCA
 
     return Pipeline(
         steps=[
-            ("scaler", StandardScaler()),
-            ("pca", PCA(n_components=int(_get_center_or_global_value(config, center, "pca_svm.n_components", "training.pca_svm.n_components", 20)), svd_solver="full", whiten=False)),
+            ('scaler', StandardScaler()),
             (
-                "svm",
+                'pca',
+                PCA(
+                    n_components=int(_get_param(config, center, 'pca_svm', 'n_components', 'training.pca_svm.n_components', 20, overrides)),
+                    svd_solver='full',
+                    whiten=False,
+                ),
+            ),
+            (
+                'svm',
                 SVC(
-                    kernel="rbf",
-                    C=float(_get_center_or_global_value(config, center, "pca_svm.C", "training.pca_svm.C", 2.0)),
-                    gamma=str(_get_center_or_global_value(config, center, "pca_svm.gamma", "training.pca_svm.gamma", "scale")),
-                    class_weight="balanced",
+                    kernel='rbf',
+                    C=float(_get_param(config, center, 'pca_svm', 'C', 'training.pca_svm.C', 2.0, overrides)),
+                    gamma=_get_param(config, center, 'pca_svm', 'gamma', 'training.pca_svm.gamma', 'scale', overrides),
+                    class_weight='balanced',
                     probability=True,
                     random_state=_get_seed(config),
                 ),
@@ -171,16 +185,16 @@ def _build_pca_svm(config, center: str):
     )
 
 
-def _build_logreg(config, center: str):
+def _build_logreg(config, center: str, overrides: dict | None = None):
     return Pipeline(
         steps=[
-            ("scaler", StandardScaler()),
+            ('scaler', StandardScaler()),
             (
-                "logreg",
+                'logreg',
                 LogisticRegression(
-                    C=float(_get_center_or_global_value(config, center, "logreg.C", "training.logreg.C", 1.0)),
-                    class_weight="balanced",
-                    max_iter=int(_get_center_or_global_value(config, center, "logreg.max_iter", "training.logreg.max_iter", 5000)),
+                    C=float(_get_param(config, center, 'logreg', 'C', 'training.logreg.C', 1.0, overrides)),
+                    class_weight='balanced',
+                    max_iter=int(_get_param(config, center, 'logreg', 'max_iter', 'training.logreg.max_iter', 5000, overrides)),
                     random_state=_get_seed(config),
                 ),
             ),
@@ -188,104 +202,126 @@ def _build_logreg(config, center: str):
     )
 
 
-def _build_pls_logreg(config, center: str, n_components: int | None = None):
-    selected_n = n_components
+def _build_pls_logreg(config, center: str, n_components: int | None = None, overrides: dict | None = None):
+    selected_n = overrides.get('n_components') if overrides and 'n_components' in overrides else n_components
     if selected_n is None:
-        selected_n = int(_get_center_or_global_value(config, center, "pls_logreg.n_components", "training.pls_logreg.n_components", 8))
+        selected_n = int(_get_center_or_global_value(config, center, 'pls_logreg.n_components', 'training.pls_logreg.n_components', 8))
 
     return PLSLogRegClassifier(
         n_components=int(selected_n),
-        C=float(_get_center_or_global_value(config, center, "pls_logreg.C", "training.pls_logreg.C", 1.0)),
-        class_weight=str(_get_center_or_global_value(config, center, "pls_logreg.class_weight", "training.pls_logreg.class_weight", "balanced")),
-        max_iter=int(_get_center_or_global_value(config, center, "pls_logreg.max_iter", "training.pls_logreg.max_iter", 5000)),
+        C=float(_get_param(config, center, 'pls_logreg', 'C', 'training.pls_logreg.C', 1.0, overrides)),
+        class_weight=_get_param(config, center, 'pls_logreg', 'class_weight', 'training.pls_logreg.class_weight', 'balanced', overrides),
+        max_iter=int(_get_param(config, center, 'pls_logreg', 'max_iter', 'training.pls_logreg.max_iter', 5000, overrides)),
         random_state=_get_seed(config),
     )
 
 
-def _build_rf(config, center: str):
+def _build_rf(config, center: str, overrides: dict | None = None):
     return RandomForestClassifier(
-        n_estimators=int(_get_center_or_global_value(config, center, "rf.n_estimators", "training.rf.n_estimators", 800)),
-        max_depth=_get_center_or_global_value(config, center, "rf.max_depth", "training.rf.max_depth", None),
-        min_samples_split=int(_get_center_or_global_value(config, center, "rf.min_samples_split", "training.rf.min_samples_split", 4)),
-        min_samples_leaf=int(_get_center_or_global_value(config, center, "rf.min_samples_leaf", "training.rf.min_samples_leaf", 2)),
-        max_features=str(_get_center_or_global_value(config, center, "rf.max_features", "training.rf.max_features", "sqrt")),
-        class_weight=str(_get_center_or_global_value(config, center, "rf.class_weight", "training.rf.class_weight", "balanced_subsample")),
+        n_estimators=int(_get_param(config, center, 'rf', 'n_estimators', 'training.rf.n_estimators', 800, overrides)),
+        max_depth=_get_param(config, center, 'rf', 'max_depth', 'training.rf.max_depth', None, overrides),
+        min_samples_split=int(_get_param(config, center, 'rf', 'min_samples_split', 'training.rf.min_samples_split', 4, overrides)),
+        min_samples_leaf=int(_get_param(config, center, 'rf', 'min_samples_leaf', 'training.rf.min_samples_leaf', 2, overrides)),
+        max_features=_get_param(config, center, 'rf', 'max_features', 'training.rf.max_features', 'sqrt', overrides),
+        class_weight=_get_param(config, center, 'rf', 'class_weight', 'training.rf.class_weight', 'balanced_subsample', overrides),
         random_state=_get_seed(config),
         n_jobs=-1,
     )
 
 
-def _build_extra_trees(config, center: str):
+def _build_extra_trees(config, center: str, overrides: dict | None = None):
     return ExtraTreesClassifier(
-        n_estimators=int(_get_center_or_global_value(config, center, "extra_trees.n_estimators", "training.extra_trees.n_estimators", 1000)),
-        max_depth=_get_center_or_global_value(config, center, "extra_trees.max_depth", "training.extra_trees.max_depth", None),
-        min_samples_split=int(_get_center_or_global_value(config, center, "extra_trees.min_samples_split", "training.extra_trees.min_samples_split", 4)),
-        min_samples_leaf=int(_get_center_or_global_value(config, center, "extra_trees.min_samples_leaf", "training.extra_trees.min_samples_leaf", 2)),
-        max_features=str(_get_center_or_global_value(config, center, "extra_trees.max_features", "training.extra_trees.max_features", "sqrt")),
-        class_weight=str(_get_center_or_global_value(config, center, "extra_trees.class_weight", "training.extra_trees.class_weight", "balanced_subsample")),
+        n_estimators=int(_get_param(config, center, 'extra_trees', 'n_estimators', 'training.extra_trees.n_estimators', 1000, overrides)),
+        max_depth=_get_param(config, center, 'extra_trees', 'max_depth', 'training.extra_trees.max_depth', None, overrides),
+        min_samples_split=int(_get_param(config, center, 'extra_trees', 'min_samples_split', 'training.extra_trees.min_samples_split', 4, overrides)),
+        min_samples_leaf=int(_get_param(config, center, 'extra_trees', 'min_samples_leaf', 'training.extra_trees.min_samples_leaf', 2, overrides)),
+        max_features=_get_param(config, center, 'extra_trees', 'max_features', 'training.extra_trees.max_features', 'sqrt', overrides),
+        class_weight=_get_param(config, center, 'extra_trees', 'class_weight', 'training.extra_trees.class_weight', 'balanced_subsample', overrides),
         random_state=_get_seed(config),
         n_jobs=-1,
     )
 
 
-def _build_catboost(config, center: str):
+def _build_catboost(config, center: str, overrides: dict | None = None):
     if CatBoostClassifier is None:
-        raise ImportError("catboost is not installed, but catboost model is enabled")
+        raise ImportError('catboost is not installed, but catboost model is enabled')
 
     return NamedCatBoostClassifier(
-        iterations=int(_get_center_or_global_value(config, center, "catboost.iterations", "training.catboost.iterations", 500)),
-        depth=int(_get_center_or_global_value(config, center, "catboost.depth", "training.catboost.depth", 5)),
-        learning_rate=float(_get_center_or_global_value(config, center, "catboost.learning_rate", "training.catboost.learning_rate", 0.05)),
-        loss_function="MultiClass",
-        eval_metric="TotalF1:average=Macro",
+        iterations=int(_get_param(config, center, 'catboost', 'iterations', 'training.catboost.iterations', 500, overrides)),
+        depth=int(_get_param(config, center, 'catboost', 'depth', 'training.catboost.depth', 5, overrides)),
+        learning_rate=float(_get_param(config, center, 'catboost', 'learning_rate', 'training.catboost.learning_rate', 0.05, overrides)),
+        loss_function='MultiClass',
+        eval_metric='TotalF1:average=Macro',
         random_seed=_get_seed(config),
         verbose=False,
         allow_writing_files=False,
-        thread_count=int(_get_center_or_global_value(config, center, "catboost.thread_count", "training.catboost.thread_count", 1)),
-        auto_class_weights=str(_get_center_or_global_value(config, center, "catboost.auto_class_weights", "training.catboost.auto_class_weights", "Balanced")),
-        l2_leaf_reg=float(_get_center_or_global_value(config, center, "catboost.l2_leaf_reg", "training.catboost.l2_leaf_reg", 5.0)),
-        bootstrap_type="Bernoulli",
-        subsample=float(_get_center_or_global_value(config, center, "catboost.subsample", "training.catboost.subsample", 0.9)),
+        thread_count=int(_get_param(config, center, 'catboost', 'thread_count', 'training.catboost.thread_count', 1, overrides)),
+        auto_class_weights=_get_param(config, center, 'catboost', 'auto_class_weights', 'training.catboost.auto_class_weights', 'Balanced', overrides),
+        l2_leaf_reg=float(_get_param(config, center, 'catboost', 'l2_leaf_reg', 'training.catboost.l2_leaf_reg', 5.0, overrides)),
+        bootstrap_type='Bernoulli',
+        subsample=float(_get_param(config, center, 'catboost', 'subsample', 'training.catboost.subsample', 0.9, overrides)),
     )
 
 
 BUILDERS = {
-    "linear_svm": _build_linear_svm,
-    "pca_svm": _build_pca_svm,
-    "logreg": _build_logreg,
-    "pls_logreg": _build_pls_logreg,
-    "rf": _build_rf,
-    "extra_trees": _build_extra_trees,
-    "catboost": _build_catboost,
+    'linear_svm': _build_linear_svm,
+    'pca_svm': _build_pca_svm,
+    'logreg': _build_logreg,
+    'pls_logreg': _build_pls_logreg,
+    'rf': _build_rf,
+    'extra_trees': _build_extra_trees,
+    'catboost': _build_catboost,
 }
 
 
 def build_pls_grid_models(config, center: str) -> Dict[str, BaseEstimator]:
-    grid = _get_center_or_global_value(config, center, "pls_logreg.n_components_grid", "training.pls_logreg.n_components_grid", None)
+    grid = _get_center_or_global_value(config, center, 'pls_logreg.n_components_grid', 'training.pls_logreg.n_components_grid', None)
     if grid is None:
-        fixed_n = int(_get_center_or_global_value(config, center, "pls_logreg.n_components", "training.pls_logreg.n_components", 8))
+        fixed_n = int(_get_center_or_global_value(config, center, 'pls_logreg.n_components', 'training.pls_logreg.n_components', 8))
         grid = [fixed_n]
 
     models: Dict[str, BaseEstimator] = {}
     for n_components in grid:
         n_int = int(n_components)
-        models[f"pls_logreg_nc{n_int}"] = _build_pls_logreg(config, center, n_components=n_int)
+        models[f'pls_logreg_nc{n_int}'] = _build_pls_logreg(config, center, n_components=n_int)
     return models
 
 
-def make_models_for_center(config, center: str, selected_pls_n_components: int | None = None) -> Dict[str, BaseEstimator]:
+def make_single_model_for_center(
+    config,
+    center: str,
+    model_name: str,
+    selected_pls_n_components: int | None = None,
+    overrides: dict | None = None,
+):
+    if model_name not in BUILDERS:
+        raise ValueError(f'Unknown model: {model_name}')
+    if model_name == 'pls_logreg':
+        return _build_pls_logreg(config, center, n_components=selected_pls_n_components, overrides=overrides)
+    return BUILDERS[model_name](config, center, overrides=overrides)
+
+
+def make_models_for_center(
+    config,
+    center: str,
+    selected_pls_n_components: int | None = None,
+    tuned_params: dict[str, dict] | None = None,
+) -> Dict[str, BaseEstimator]:
     models: Dict[str, BaseEstimator] = {}
+    tuned_params = tuned_params or {}
 
     for model_name in SUPPORTED_MODEL_NAMES:
         if not is_model_enabled_for_center(config, center, model_name, default=False):
             continue
-
-        if model_name == "pls_logreg":
-            models[model_name] = _build_pls_logreg(config, center, n_components=selected_pls_n_components)
-        else:
-            models[model_name] = BUILDERS[model_name](config, center)
+        models[model_name] = make_single_model_for_center(
+            config,
+            center=center,
+            model_name=model_name,
+            selected_pls_n_components=selected_pls_n_components,
+            overrides=tuned_params.get(model_name),
+        )
 
     if not models:
-        raise ValueError(f"No models enabled for center={center}")
+        raise ValueError(f'No models enabled for center={center}')
 
     return models

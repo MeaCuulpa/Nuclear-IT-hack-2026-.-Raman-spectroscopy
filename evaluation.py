@@ -195,6 +195,7 @@ def evaluate_group_cv(
     random_state: int = 42,
     sample_ids: list[str] | None = None,
     ensemble_config: dict | None = None,
+    verbose: bool = True,
 ) -> Tuple[list[dict], pd.DataFrame, pd.DataFrame]:
     unique_groups = np.unique(groups)
     n_splits = min(n_splits, len(unique_groups))
@@ -213,7 +214,8 @@ def evaluate_group_cv(
         y_proba_oof = np.zeros((len(y), len(LABELS)), dtype=float)
         fold_reports = []
 
-        print(f"\n=== MODEL: {model_name} | DATASET: {dataset_name} | CV: {cv_strategy} ===")
+        if verbose:
+            print(f"\n=== MODEL: {model_name} | DATASET: {dataset_name} | CV: {cv_strategy} ===")
         for fold, (train_idx, valid_idx) in enumerate(splits, start=1):
             x_train, x_valid = x[train_idx], x[valid_idx]
             y_train, y_valid = y[train_idx], y[valid_idx]
@@ -229,10 +231,11 @@ def evaluate_group_cv(
 
             metrics = _metrics_from_predictions(y_valid, pred)
             fold_class_dist = {INV_CLASS_MAP[int(label)]: int((y_valid == label).sum()) for label in LABELS}
-            print(
-                f"Fold {fold}: acc={metrics['acc']:.4f} | bacc={metrics['bacc']:.4f} | "
-                f"macro_f1={metrics['macro_f1']:.4f} | valid_classes={fold_class_dist}"
-            )
+            if verbose:
+                print(
+                    f"Fold {fold}: acc={metrics['acc']:.4f} | bacc={metrics['bacc']:.4f} | "
+                    f"macro_f1={metrics['macro_f1']:.4f} | valid_classes={fold_class_dist}"
+                )
             fold_reports.append(
                 {
                     "fold": fold,
@@ -272,15 +275,16 @@ def evaluate_group_cv(
         ensemble_name = str(ensemble_config.get("name", "ensemble_soft"))
         ensemble_fold_reports = _build_fold_reports_from_oof(y, ensemble_pred, splits)
 
-        print(
-            f"\n=== ENSEMBLE: {ensemble_name} | MEMBERS: {members} | WEIGHTS: "
-            f"{[round(weights_map[name], 4) for name in members]} ==="
-        )
-        for report in ensemble_fold_reports:
+        if verbose:
             print(
-                f"Fold {report['fold']}: acc={report['acc']:.4f} | bacc={report['bacc']:.4f} | "
-                f"macro_f1={report['macro_f1']:.4f}"
+                f"\n=== ENSEMBLE: {ensemble_name} | MEMBERS: {members} | WEIGHTS: "
+                f"{[round(weights_map[name], 4) for name in members]} ==="
             )
+            for report in ensemble_fold_reports:
+                print(
+                    f"Fold {report['fold']}: acc={report['acc']:.4f} | bacc={report['bacc']:.4f} | "
+                    f"macro_f1={report['macro_f1']:.4f}"
+                )
 
         results.append(
             _build_result_record(

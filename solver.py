@@ -12,6 +12,7 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, classificat
 from dataset import INV_CLASS_MAP, RamanDataset
 from evaluation import LABELS, TARGET_NAMES, evaluate_group_cv
 from models import build_pls_grid_models, get_center_training_cfg, is_model_enabled_for_center, make_models_for_center
+from pbt import run_pbt_for_center
 from preprocessing import PreprocessingConfig, SpectraPreprocessor
 from utils import ensure_dir, save_json, set_seed
 
@@ -325,17 +326,43 @@ class Solver:
             print(f"[INFO] Unique groups for center {center}: {len(set(groups_sw))}")
             print(f"[INFO] Samplewise files for center {center}: {len(file_ids_sw)}")
 
-            selected_pls_n, pls_grid_payload = self._select_best_pls_n_components(
+            tuned_params, pbt_payload = run_pbt_for_center(
+                config=self.config,
                 center=center,
                 x=x_sw,
                 y=y_sw,
                 groups=groups_sw,
-                file_ids=file_ids_sw,
+                sample_ids=file_ids_sw,
                 center_output_dir=center_output_dir,
+                n_splits=int(getattr(self.config.training, "group_kfold_splits", 3)),
+                cv_strategy=cv_strategy,
+                random_state=int(self.config.project.seed),
             )
+            if tuned_params:
+                print(f"[INFO] PBT tuned params for center {center}: {tuned_params}")
+
+            selected_pls_n = None
+            pls_grid_payload = None
+            if "pls_logreg" in tuned_params and "n_components" in tuned_params["pls_logreg"]:
+                selected_pls_n = int(tuned_params["pls_logreg"]["n_components"])
+                print(f"[INFO] Using PBT-selected PLS n_components for center={center}: {selected_pls_n}")
+            else:
+                selected_pls_n, pls_grid_payload = self._select_best_pls_n_components(
+                    center=center,
+                    x=x_sw,
+                    y=y_sw,
+                    groups=groups_sw,
+                    file_ids=file_ids_sw,
+                    center_output_dir=center_output_dir,
+                )
 
             print(f"[STEP] Creating center-specific models for center={center}...")
-            models = make_models_for_center(self.config, center=center, selected_pls_n_components=selected_pls_n)
+            models = make_models_for_center(
+                self.config,
+                center=center,
+                selected_pls_n_components=selected_pls_n,
+                tuned_params=tuned_params,
+            )
             print(f"[INFO] Enabled models for center {center}: {list(models.keys())}")
 
             ensemble_config = self._build_center_ensemble_config(center, list(models.keys()))
@@ -389,6 +416,8 @@ class Solver:
                 "best_model": best_row,
                 "results": sw_results,
                 "pls_grid_search": pls_grid_payload,
+                "pbt": pbt_payload,
+                "tuned_hyperparameters": tuned_params,
                 "fusion_model_name": fusion_model_name,
                 "fusion_score": fusion_score,
             }
