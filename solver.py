@@ -10,9 +10,9 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score
 
 from dataset import INV_CLASS_MAP, RamanDataset
-from evaluation import LABELS, TARGET_NAMES, evaluate_group_cv
-from models import build_pls_grid_models, get_center_training_cfg, is_model_enabled_for_center, make_models_for_center
-from pbt import run_pbt_for_center
+from evaluation import LABELS, TARGET_NAMES
+from models import get_center_training_cfg, is_model_enabled_for_center
+from nested_cv import run_nested_group_cv_for_center
 from preprocessing import PreprocessingConfig, SpectraPreprocessor
 from utils import ensure_dir, save_json, set_seed
 
@@ -23,14 +23,6 @@ class Solver:
         set_seed(int(self.config.project.seed))
         self.output_dir = ensure_dir(self.config.paths.outputs)
         self.dataset = RamanDataset(self.config.paths.data_root)
-
-    def _get_nested(self, node, path: str, default=None):
-        current = node
-        for part in path.split("."):
-            if current is None or not hasattr(current, part):
-                return default
-            current = getattr(current, part)
-        return current
 
     def _get_center_crop(self, center: str) -> list[float]:
         crop_ranges_by_center = getattr(self.config.preprocessing, "crop_ranges_by_center", None)
@@ -63,9 +55,27 @@ class Solver:
 
         global_agg = [str(value) for value in getattr(self.config.data, "sample_agg_features", ["median"])]
         return {
-            "agg_features": [str(value) for value in getattr(feature_cfg, "sample_agg_features", global_agg)] if feature_cfg is not None else global_agg,
-            "include_region_feature": bool(getattr(feature_cfg, "include_region_feature", getattr(self.config.data, "include_region_feature", False))) if feature_cfg is not None else bool(getattr(self.config.data, "include_region_feature", False)),
-            "append_first_derivative": bool(getattr(feature_cfg, "append_first_derivative", getattr(self.config.data, "append_first_derivative", False))) if feature_cfg is not None else bool(getattr(self.config.data, "append_first_derivative", False)),
+            "agg_features": [str(value) for value in getattr(feature_cfg, "sample_agg_features", global_agg)]
+            if feature_cfg is not None
+            else global_agg,
+            "include_region_feature": bool(
+                getattr(
+                    feature_cfg,
+                    "include_region_feature",
+                    getattr(self.config.data, "include_region_feature", False),
+                )
+            )
+            if feature_cfg is not None
+            else bool(getattr(self.config.data, "include_region_feature", False)),
+            "append_first_derivative": bool(
+                getattr(
+                    feature_cfg,
+                    "append_first_derivative",
+                    getattr(self.config.data, "append_first_derivative", False),
+                )
+            )
+            if feature_cfg is not None
+            else bool(getattr(self.config.data, "append_first_derivative", False)),
         }
 
     def _build_samplewise_cache_tag(self, center: str, feature_cfg: dict) -> str:
@@ -110,63 +120,27 @@ class Solver:
                 if hasattr(weights_node, name):
                     weights[name] = float(getattr(weights_node, name))
 
+        weight_candidates = []
+        raw_candidates = getattr(ensemble_cfg, "weight_candidates", None)
+        if raw_candidates is not None:
+            for candidate in raw_candidates:
+                candidate_map = {}
+                for name in members:
+                    if isinstance(candidate, dict):
+                        if name in candidate:
+                            candidate_map[name] = float(candidate[name])
+                    elif hasattr(candidate, name):
+                        candidate_map[name] = float(getattr(candidate, name))
+                if candidate_map:
+                    weight_candidates.append(candidate_map)
+
         return {
             "enabled": True,
             "name": str(getattr(ensemble_cfg, "name", f"ensemble_center{center}")),
             "members": members,
             "weights": weights,
-            "weighting": str(getattr(ensemble_cfg, "weighting", "oof_macro_f1")),
-        }
-
-    def _select_best_pls_n_components(
-        self,
-        center: str,
-        x: np.ndarray,
-        y: np.ndarray,
-        groups: np.ndarray,
-        file_ids: list[str],
-        center_output_dir: Path,
-    ) -> tuple[int | None, dict | None]:
-        if not is_model_enabled_for_center(self.config, center, "pls_logreg", default=False):
-            return None, None
-
-        candidate_models = build_pls_grid_models(self.config, center)
-        if not candidate_models:
-            return None, None
-
-        if len(candidate_models) == 1:
-            only_name = next(iter(candidate_models))
-            match = re.search(r"nc(\d+)$", only_name)
-            selected = int(match.group(1)) if match else None
-            return selected, {"selected_n_components": selected, "grid_results": []}
-
-        print(f"[STEP] Running PLS component sweep for center={center}...")
-        pls_results, pls_df, _ = evaluate_group_cv(
-            x,
-            y,
-            groups,
-            candidate_models,
-            n_splits=int(getattr(self.config.training, "group_kfold_splits", 3)),
-            dataset_name=f"pls_grid_center{center}",
-            cv_strategy=str(getattr(self.config.training, "cv_strategy", "stratified_group")),
-            random_state=int(self.config.project.seed),
-            sample_ids=file_ids,
-            ensemble_config=None,
-        )
-        pls_df = pls_df.sort_values("oof_macro_f1", ascending=False).reset_index(drop=True)
-        pls_df.to_csv(center_output_dir / f"pls_grid_search_center{center}.csv", index=False)
-        save_json(pls_results, center_output_dir / f"pls_grid_search_center{center}.json")
-
-        best_name = str(pls_df.iloc[0]["model"])
-        match = re.search(r"nc(\d+)$", best_name)
-        if match is None:
-            raise ValueError(f"Could not parse n_components from model name: {best_name}")
-
-        selected_n = int(match.group(1))
-        print(f"[INFO] Best PLS n_components for center={center}: {selected_n}")
-        return selected_n, {
-            "selected_n_components": selected_n,
-            "grid_results": pls_results,
+            "weight_candidates": weight_candidates,
+            "weighting": str(getattr(ensemble_cfg, "weighting", "inner_cv_selected")),
         }
 
     def _build_fusion_key(self, sample_id: str) -> str:
@@ -186,7 +160,7 @@ class Solver:
             print("[WARN] Late fusion skipped: need at least 2 centers with predictions")
             return None
 
-        weighting = str(getattr(late_cfg, "weighting", "oof_macro_f1"))
+        weighting = str(getattr(late_cfg, "weighting", "uniform"))
         fusion_name = str(getattr(late_cfg, "name", "late_fusion"))
 
         merge_df = None
@@ -202,32 +176,37 @@ class Solver:
             center_df = oof_df[base_cols].copy()
             for class_label in LABELS:
                 class_name = INV_CLASS_MAP[class_label]
-                center_df[f"proba__{center}__{class_name}"] = oof_df[
-                    f"proba__{fusion_model_name}__{class_name}"
-                ]
+                center_df[f"proba__{center}__{class_name}"] = oof_df[f"proba__{fusion_model_name}__{class_name}"]
 
             if merge_df is None:
                 merge_df = center_df
             else:
-                merge_df = merge_df.merge(center_df, on=["fusion_key", "true_label", "true_label_name", "group"], how="inner")
+                merge_df = merge_df.merge(
+                    center_df,
+                    on=["fusion_key", "true_label", "true_label_name", "group"],
+                    how="inner",
+                )
 
         if merge_df is None or merge_df.empty:
             print("[WARN] Late fusion skipped: no overlapping samples between centers")
             return None
 
-        raw_weights = np.array([max(center_scores[center], 1e-8) for center in use_centers], dtype=float) if weighting == "oof_macro_f1" else np.ones(len(use_centers), dtype=float)
+        if weighting == "oof_macro_f1":
+            raw_weights = np.array([max(center_scores[center], 1e-8) for center in use_centers], dtype=float)
+        else:
+            raw_weights = np.ones(len(use_centers), dtype=float)
+
         weights = raw_weights / raw_weights.sum()
         weights_map = {center: float(weight) for center, weight in zip(use_centers, weights)}
 
         final_proba = np.zeros((len(merge_df), len(LABELS)), dtype=float)
         for weight, center in zip(weights, use_centers):
-            center_proba = np.column_stack(
-                [merge_df[f"proba__{center}__{INV_CLASS_MAP[label]}"] for label in LABELS]
-            )
+            center_proba = np.column_stack([merge_df[f"proba__{center}__{INV_CLASS_MAP[label]}"] for label in LABELS])
             final_proba += weight * center_proba
 
         y_true = merge_df["true_label"].to_numpy(dtype=int)
         y_pred = np.asarray([LABELS[idx] for idx in np.argmax(final_proba, axis=1)], dtype=int)
+
         metrics = {
             "acc": float(accuracy_score(y_true, y_pred)),
             "bacc": float(balanced_accuracy_score(y_true, y_pred)),
@@ -249,11 +228,16 @@ class Solver:
         fusion_df = merge_df[["fusion_key", "group", "true_label", "true_label_name"]].copy()
         fusion_df["pred__late_fusion"] = y_pred
         fusion_df["pred_name__late_fusion"] = [INV_CLASS_MAP[int(label)] for label in y_pred]
+
         for class_idx, class_label in enumerate(LABELS):
             class_name = INV_CLASS_MAP[class_label]
             fusion_df[f"proba__late_fusion__{class_name}"] = final_proba[:, class_idx]
 
-        return {"name": fusion_name, "metrics": metrics, "oof_df": fusion_df}
+        return {
+            "name": fusion_name,
+            "metrics": metrics,
+            "oof_df": fusion_df,
+        }
 
     def run(self) -> None:
         use_raw_cache = bool(getattr(self.config.data, "use_raw_cache", True))
@@ -287,7 +271,7 @@ class Solver:
             "n_unique_mice": int(metadata_df["mouse_id"].nunique()),
             "class_distribution": metadata_df["label_name"].value_counts().to_dict(),
             "center_distribution": metadata_df["center"].value_counts().to_dict(),
-            "cv_strategy": cv_strategy,
+            "cv_strategy": f"nested_{cv_strategy}",
             "results_by_center": {},
         }
         center_payloads_for_fusion = {}
@@ -309,7 +293,7 @@ class Solver:
 
             print(f"[STEP] Building samplewise dataset for center={center}...")
             center_preprocessor = self._make_preprocessor_for_center(center)
-            wave_sw, x_sw, y_sw, groups_sw, file_ids_sw = self.dataset.build_samplewise_dataset(
+            _, x_sw, y_sw, groups_sw, file_ids_sw = self.dataset.build_samplewise_dataset(
                 center_preprocessor,
                 agg_methods=feature_cfg["agg_features"],
                 use_processed=bool(self.config.preprocessing.enabled),
@@ -326,7 +310,22 @@ class Solver:
             print(f"[INFO] Unique groups for center {center}: {len(set(groups_sw))}")
             print(f"[INFO] Samplewise files for center {center}: {len(file_ids_sw)}")
 
-            tuned_params, pbt_payload = run_pbt_for_center(
+            available_model_names = [
+                model_name
+                for model_name in ["extra_trees", "catboost", "pls_logreg", "linear_svm", "pca_svm", "rf", "logreg"]
+                if is_model_enabled_for_center(self.config, center, model_name, default=False)
+            ]
+            if not available_model_names:
+                raise ValueError(f"No models enabled for center={center}")
+
+            print(f"[INFO] Enabled models for center {center}: {available_model_names}")
+
+            ensemble_config = self._build_center_ensemble_config(center, available_model_names)
+            if ensemble_config is not None:
+                print(f"[INFO] Ensemble config for center {center}: {ensemble_config}")
+
+            print(f"[STEP] Running nested samplewise CV for center={center}...")
+            sw_results, sw_results_df, sw_oof_df, nested_payload = run_nested_group_cv_for_center(
                 config=self.config,
                 center=center,
                 x=x_sw,
@@ -334,58 +333,14 @@ class Solver:
                 groups=groups_sw,
                 sample_ids=file_ids_sw,
                 center_output_dir=center_output_dir,
-                n_splits=int(getattr(self.config.training, "group_kfold_splits", 3)),
-                cv_strategy=cv_strategy,
-                random_state=int(self.config.project.seed),
-            )
-            if tuned_params:
-                print(f"[INFO] PBT tuned params for center {center}: {tuned_params}")
-
-            selected_pls_n = None
-            pls_grid_payload = None
-            if "pls_logreg" in tuned_params and "n_components" in tuned_params["pls_logreg"]:
-                selected_pls_n = int(tuned_params["pls_logreg"]["n_components"])
-                print(f"[INFO] Using PBT-selected PLS n_components for center={center}: {selected_pls_n}")
-            else:
-                selected_pls_n, pls_grid_payload = self._select_best_pls_n_components(
-                    center=center,
-                    x=x_sw,
-                    y=y_sw,
-                    groups=groups_sw,
-                    file_ids=file_ids_sw,
-                    center_output_dir=center_output_dir,
-                )
-
-            print(f"[STEP] Creating center-specific models for center={center}...")
-            models = make_models_for_center(
-                self.config,
-                center=center,
-                selected_pls_n_components=selected_pls_n,
-                tuned_params=tuned_params,
-            )
-            print(f"[INFO] Enabled models for center {center}: {list(models.keys())}")
-
-            ensemble_config = self._build_center_ensemble_config(center, list(models.keys()))
-            if ensemble_config is not None:
-                print(f"[INFO] Ensemble config for center {center}: {ensemble_config}")
-
-            print(f"[STEP] Running samplewise CV for center={center}...")
-            sw_results, sw_results_df, sw_oof_df = evaluate_group_cv(
-                x_sw,
-                y_sw,
-                groups_sw,
-                models,
-                n_splits=int(getattr(self.config.training, "group_kfold_splits", 3)),
-                dataset_name=f"samplewise_center{center}",
-                cv_strategy=cv_strategy,
-                random_state=int(self.config.project.seed),
-                sample_ids=file_ids_sw,
+                available_model_names=available_model_names,
                 ensemble_config=ensemble_config,
             )
+
             sw_results_df = sw_results_df.sort_values("oof_macro_f1", ascending=False).reset_index(drop=True)
             sw_oof_df["fusion_key"] = sw_oof_df["sample_id"].map(self._build_fusion_key)
 
-            print(f"\n=== SAMPLEWISE RESULTS | CENTER {center} ===")
+            print(f"\n=== NESTED SAMPLEWISE RESULTS | CENTER {center} ===")
             print(sw_results_df)
 
             sw_results_df.to_csv(center_output_dir / f"cv_results_samplewise_center{center}.csv", index=False)
@@ -412,12 +367,9 @@ class Solver:
                 "n_files": int(len(center_df)),
                 "class_distribution": center_df["label_name"].value_counts().to_dict(),
                 "feature_config": feature_cfg,
-                "selected_pls_n_components": selected_pls_n,
                 "best_model": best_row,
                 "results": sw_results,
-                "pls_grid_search": pls_grid_payload,
-                "pbt": pbt_payload,
-                "tuned_hyperparameters": tuned_params,
+                "nested_cv": nested_payload,
                 "fusion_model_name": fusion_model_name,
                 "fusion_score": fusion_score,
             }

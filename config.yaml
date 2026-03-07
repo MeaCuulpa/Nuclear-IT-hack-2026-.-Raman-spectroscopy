@@ -42,6 +42,12 @@ training:
   cv_strategy: stratified_group
   group_kfold_splits: 3
 
+  nested_cv:
+    enabled: true
+    outer_splits: 3
+    inner_splits: 2
+    random_state: 42
+
   datasets:
     samplewise: true
     pixelwise: false
@@ -49,6 +55,7 @@ training:
   centers:
     "1500":
       enabled: true
+
       feature_config:
         sample_agg_features: [median, mean, std, q25, q75]
         append_first_derivative: true
@@ -67,10 +74,18 @@ training:
         enabled: true
         name: ensemble_center1500
         members: [extra_trees, catboost, pls_logreg]
-        weighting: oof_macro_f1
+        weighting: inner_cv_selected
+        weight_candidates:
+          - {extra_trees: 1.0, catboost: 0.0, pls_logreg: 0.0}
+          - {extra_trees: 0.0, catboost: 1.0, pls_logreg: 0.0}
+          - {extra_trees: 0.0, catboost: 0.0, pls_logreg: 1.0}
+          - {extra_trees: 1.0, catboost: 1.0, pls_logreg: 1.0}
+          - {extra_trees: 0.5, catboost: 0.3, pls_logreg: 0.2}
+          - {extra_trees: 0.4, catboost: 0.4, pls_logreg: 0.2}
+          - {extra_trees: 0.4, catboost: 0.2, pls_logreg: 0.4}
 
       extra_trees:
-        n_estimators: 1200
+        n_estimators: 900
         max_depth: null
         min_samples_split: 4
         min_samples_leaf: 2
@@ -78,7 +93,7 @@ training:
         class_weight: balanced_subsample
 
       catboost:
-        iterations: 600
+        iterations: 450
         depth: 5
         learning_rate: 0.04
         thread_count: 1
@@ -87,39 +102,63 @@ training:
         auto_class_weights: Balanced
 
       pls_logreg:
-        n_components_grid: [2, 3, 5, 8, 10, 15, 20]
+        n_components: 8
+        n_components_grid: [3, 5, 8, 10, 15]
         C: 1.0
         class_weight: balanced
         max_iter: 5000
 
+      nested_search:
+        extra_trees:
+          n_estimators: [600, 1200]
+          min_samples_split: [2, 4]
+          min_samples_leaf: [1, 2, 4]
+          max_features: [sqrt, 0.5]
+          class_weight: [balanced_subsample]
+
+        catboost:
+          iterations: [400, 600]
+          depth: [4, 5]
+          learning_rate: [0.03, 0.05]
+          l2_leaf_reg: [3.0, 5.0, 7.0]
+          subsample: [0.8, 0.9]
+
+        pls_logreg:
+          n_components: [2, 3, 5, 8, 10, 15]
+          C: [0.3, 1.0, 3.0]
+          class_weight: [balanced]
+
+      # Оставил быстрый PBT-блок на случай, если захочешь вернуться к старому solver.
+      # Nested solver выше эти настройки не использует.
       pbt:
         enabled: true
         models: [extra_trees, catboost, pls_logreg]
-        population_size: 6
-        generations: 3
+        population_size: 4
+        generations: 2
         exploit_top_fraction: 0.5
-        mutation_prob: 0.8
+        mutation_prob: 0.65
         random_state: 42
         search_spaces:
           extra_trees:
-            n_estimators: [400, 600, 900, 1200, 1500]
-            min_samples_split: [2, 4, 6, 8]
-            min_samples_leaf: [1, 2, 3, 4]
-            max_features: [sqrt, log2, 0.5, 0.75]
-            class_weight: [balanced, balanced_subsample]
+            n_estimators: [600, 900, 1200]
+            min_samples_split: [2, 4, 6]
+            min_samples_leaf: [1, 2, 3]
+            max_features: [sqrt, 0.5]
+            class_weight: [balanced_subsample]
           catboost:
-            iterations: [300, 450, 600, 800]
-            depth: [3, 4, 5, 6]
-            learning_rate: [0.02, 0.03, 0.05, 0.07]
-            l2_leaf_reg: [3.0, 5.0, 7.0, 9.0]
-            subsample: [0.7, 0.8, 0.9, 1.0]
+            iterations: [300, 450]
+            depth: [4, 5]
+            learning_rate: [0.03, 0.05]
+            l2_leaf_reg: [3.0, 5.0, 7.0]
+            subsample: [0.8, 0.9]
           pls_logreg:
-            n_components: [2, 3, 5, 8, 10, 15, 20]
-            C: [0.1, 0.3, 0.7, 1.0, 2.0, 5.0, 10.0]
-            class_weight: [balanced, null]
+            n_components: [3, 5, 8, 10, 15]
+            C: [0.3, 1.0, 3.0]
+            class_weight: [balanced]
 
     "2900":
       enabled: true
+
       feature_config:
         sample_agg_features: [median, mean, std, q25, q75]
         append_first_derivative: true
@@ -138,10 +177,18 @@ training:
         enabled: true
         name: ensemble_center2900
         members: [extra_trees, catboost, pls_logreg]
-        weighting: oof_macro_f1
+        weighting: inner_cv_selected
+        weight_candidates:
+          - {extra_trees: 1.0, catboost: 0.0, pls_logreg: 0.0}
+          - {extra_trees: 0.0, catboost: 1.0, pls_logreg: 0.0}
+          - {extra_trees: 0.0, catboost: 0.0, pls_logreg: 1.0}
+          - {extra_trees: 1.0, catboost: 1.0, pls_logreg: 1.0}
+          - {extra_trees: 0.5, catboost: 0.3, pls_logreg: 0.2}
+          - {extra_trees: 0.4, catboost: 0.4, pls_logreg: 0.2}
+          - {extra_trees: 0.4, catboost: 0.2, pls_logreg: 0.4}
 
       extra_trees:
-        n_estimators: 900
+        n_estimators: 700
         max_depth: null
         min_samples_split: 4
         min_samples_leaf: 3
@@ -158,42 +205,64 @@ training:
         auto_class_weights: Balanced
 
       pls_logreg:
-        n_components_grid: [2, 3, 5, 8, 10, 15, 20]
+        n_components: 8
+        n_components_grid: [3, 5, 8, 10, 15]
         C: 1.0
         class_weight: balanced
         max_iter: 5000
 
+      nested_search:
+        extra_trees:
+          n_estimators: [500, 900]
+          min_samples_split: [2, 4]
+          min_samples_leaf: [2, 3, 4]
+          max_features: [sqrt, 0.5]
+          class_weight: [balanced_subsample]
+
+        catboost:
+          iterations: [250, 450]
+          depth: [3, 4, 5]
+          learning_rate: [0.03, 0.05, 0.08]
+          l2_leaf_reg: [5.0, 7.0, 9.0]
+          subsample: [0.8, 0.9]
+
+        pls_logreg:
+          n_components: [2, 3, 5, 8, 10, 15]
+          C: [0.3, 1.0, 3.0]
+          class_weight: [balanced]
+
+      # Оставил быстрый PBT-блок на случай возврата к старому solver.
       pbt:
         enabled: true
         models: [extra_trees, catboost, pls_logreg]
-        population_size: 6
-        generations: 3
+        population_size: 4
+        generations: 2
         exploit_top_fraction: 0.5
-        mutation_prob: 0.8
+        mutation_prob: 0.65
         random_state: 42
         search_spaces:
           extra_trees:
-            n_estimators: [300, 500, 700, 900, 1200]
-            min_samples_split: [2, 4, 6, 8]
-            min_samples_leaf: [1, 2, 3, 4]
-            max_features: [sqrt, log2, 0.5, 0.75]
-            class_weight: [balanced, balanced_subsample]
+            n_estimators: [500, 700, 900]
+            min_samples_split: [2, 4, 6]
+            min_samples_leaf: [2, 3, 4]
+            max_features: [sqrt, 0.5]
+            class_weight: [balanced_subsample]
           catboost:
-            iterations: [250, 350, 450, 650]
-            depth: [3, 4, 5, 6]
-            learning_rate: [0.02, 0.03, 0.05, 0.07, 0.1]
-            l2_leaf_reg: [3.0, 5.0, 7.0, 9.0]
-            subsample: [0.7, 0.8, 0.9, 1.0]
+            iterations: [250, 450]
+            depth: [3, 4, 5]
+            learning_rate: [0.03, 0.05, 0.08]
+            l2_leaf_reg: [5.0, 7.0, 9.0]
+            subsample: [0.8, 0.9]
           pls_logreg:
-            n_components: [2, 3, 5, 8, 10, 15, 20]
-            C: [0.1, 0.3, 0.7, 1.0, 2.0, 5.0, 10.0]
-            class_weight: [balanced, null]
+            n_components: [3, 5, 8, 10, 15]
+            C: [0.3, 1.0, 3.0]
+            class_weight: [balanced]
 
   late_fusion:
     enabled: true
     name: late_fusion_1500_2900
     centers: [1500, 2900]
-    weighting: oof_macro_f1
+    weighting: uniform
 
 interpretation:
   rf_top_k: 30
