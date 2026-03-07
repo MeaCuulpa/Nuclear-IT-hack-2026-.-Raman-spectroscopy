@@ -1,15 +1,10 @@
+from __future__ import annotations
+
 from solver import Solver
-from omegaconf import OmegaConf
-import pandas as pd
+from utils import load_config
 
 
-if __name__ == '__main__':
-    cfg = OmegaConf.load('config.yaml')
-    if cfg.task.titanic and cfg.task.house_pricing:
-        raise Exception('Only one task at a time')
-
+if __name__ == "__main__":
+    cfg = load_config("config.yaml")
     solver = Solver(cfg)
-    if cfg.mode.is_train:
-        solver.fit()
-    if cfg.mode.is_inference:
-        solver.predict()
+    solver.run()
