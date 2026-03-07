@@ -40,7 +40,7 @@ preprocessing:
 
 training:
   cv_strategy: stratified_group
-  group_kfold_splits: 4
+  group_kfold_splits: 3
 
   datasets:
     samplewise: true
@@ -49,9 +49,43 @@ training:
   models:
     linear_svm: false
     pca_svm: false
-    rf: true
+    rf: false
     extra_trees: true
+    catboost: true
+    pls_logreg: true
     logreg: false
+
+  ensemble:
+    enabled: true
+    name: ensemble_soft
+    members: [extra_trees, catboost, pls_logreg]
+    weights:
+      extra_trees: 1.0
+      catboost: 1.0
+      pls_logreg: 1.0
+
+  extra_trees:
+    n_estimators: 1000
+    max_depth: null
+    min_samples_split: 4
+    min_samples_leaf: 2
+    max_features: sqrt
+    class_weight: balanced_subsample
+
+  catboost:
+    iterations: 500
+    depth: 5
+    learning_rate: 0.05
+    thread_count: 1
+    l2_leaf_reg: 5.0
+    subsample: 0.9
+    auto_class_weights: Balanced
+
+  pls_logreg:
+    n_components: 8
+    C: 1.0
+    class_weight: balanced
+    max_iter: 5000
 
 interpretation:
   rf_top_k: 30

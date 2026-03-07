@@ -88,6 +88,34 @@ class Solver:
         raw = json.dumps(payload, sort_keys=True).encode("utf-8")
         return hashlib.md5(raw).hexdigest()[:12]
 
+    def _build_ensemble_config(self) -> dict | None:
+        ensemble_cfg = getattr(self.config.training, "ensemble", None)
+        if ensemble_cfg is None:
+            return None
+
+        enabled = bool(getattr(ensemble_cfg, "enabled", False))
+        if not enabled:
+            return None
+
+        members_cfg = getattr(ensemble_cfg, "members", [])
+        members = [str(value) for value in members_cfg]
+        if not members:
+            return None
+
+        weights_node = getattr(ensemble_cfg, "weights", None)
+        weights = {}
+        if weights_node is not None:
+            for key in members:
+                if hasattr(weights_node, key):
+                    weights[key] = float(getattr(weights_node, key))
+
+        return {
+            "enabled": True,
+            "name": str(getattr(ensemble_cfg, "name", "ensemble_soft")),
+            "members": members,
+            "weights": weights,
+        }
+
     def run(self) -> None:
         use_raw_cache = bool(getattr(self.config.data, "use_raw_cache", True))
         force_reload_raw_cache = bool(getattr(self.config.data, "force_reload_raw_cache", False))
@@ -109,6 +137,7 @@ class Solver:
         centers_to_run_cfg = getattr(self.config.data, "centers_to_run", [1500, 2900])
         centers_to_run = [str(value) for value in centers_to_run_cfg]
         cv_strategy = str(getattr(self.config.training, "cv_strategy", "stratified_group"))
+        ensemble_config = self._build_ensemble_config()
 
         print("[STEP] Loading raw dataset...")
         metadata_df, raw_data = self.dataset.load(
@@ -129,6 +158,11 @@ class Solver:
 
         print("[STEP] Creating models...")
         models = make_baseline_models(self.config)
+        print(f"[INFO] Enabled models: {list(models.keys())}")
+        if ensemble_config is not None:
+            print(
+                f"[INFO] Ensemble enabled: {ensemble_config['name']} from {ensemble_config['members']}"
+            )
 
         final_report = {
             "n_files": int(len(metadata_df)),
@@ -139,6 +173,7 @@ class Solver:
             "append_first_derivative": append_first_derivative,
             "include_region_feature": include_region_feature,
             "cv_strategy": cv_strategy,
+            "ensemble": ensemble_config,
             "results_by_center": {},
         }
 
@@ -181,7 +216,7 @@ class Solver:
             print(f"[INFO] Samplewise files for center {center}: {len(file_ids_sw)}")
 
             print(f"[STEP] Running samplewise CV for center={center}...")
-            sw_results, sw_results_df = evaluate_group_cv(
+            sw_results, sw_results_df, sw_oof_df = evaluate_group_cv(
                 x_sw,
                 y_sw,
                 groups_sw,
@@ -190,18 +225,26 @@ class Solver:
                 dataset_name=f"samplewise_center{center}",
                 cv_strategy=cv_strategy,
                 random_state=int(self.config.project.seed),
+                sample_ids=file_ids_sw,
+                ensemble_config=ensemble_config,
             )
 
+            sw_results_df = sw_results_df.sort_values("oof_macro_f1", ascending=False).reset_index(drop=True)
+
             print(f"\n=== SAMPLEWISE RESULTS | CENTER {center} ===")
-            print(sw_results_df.sort_values("oof_macro_f1", ascending=False))
+            print(sw_results_df)
 
             sw_results_df.to_csv(
                 center_output_dir / f"cv_results_samplewise_center{center}.csv",
                 index=False,
             )
+            sw_oof_df.to_csv(
+                center_output_dir / f"oof_predictions_samplewise_center{center}.csv",
+                index=False,
+            )
             save_json(sw_results, center_output_dir / f"samplewise_results_center{center}.json")
 
-            best_row = sw_results_df.sort_values("oof_macro_f1", ascending=False).iloc[0].to_dict()
+            best_row = sw_results_df.iloc[0].to_dict()
 
             final_report["results_by_center"][f"center_{center}"] = {
                 "n_files": int(len(center_df)),
