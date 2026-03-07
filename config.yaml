@@ -7,19 +7,31 @@ paths:
 
 data:
   sample_agg_method: median
+
+  include_region_feature: true
+  centers_to_run: [1500, 2900]
+
   use_raw_cache: true
   force_reload_raw_cache: false
+
   use_aligned_cache: true
   force_rebuild_aligned_cache: false
+
   use_samplewise_cache: true
   force_rebuild_samplewise_cache: false
 
 preprocessing:
   enabled: true
-  crop_range: [700.0, 1800.0]
-  despike_threshold: 5.0
+
+  crop_range: [700, 1800]
+
+  crop_ranges_by_center:
+    "1500": [700, 1800]
+    "2900": [2600, 3200]
+
+  despike_threshold: 6.0
   despike_window: 3
-  smooth_window: 9
+  smooth_window: 11
   smooth_polyorder: 3
   baseline_lam: 100000.0
   baseline_p: 0.01
@@ -28,11 +40,13 @@ preprocessing:
 
 training:
   group_kfold_splits: 4
+
   datasets:
     samplewise: true
     pixelwise: false
+
   models:
-    pca_svm: true
+    pca_svm: false
     rf: true
 
 eda:

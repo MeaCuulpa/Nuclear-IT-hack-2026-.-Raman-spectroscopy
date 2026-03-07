@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import joblib
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,9 @@ CLASS_MAP = {
 }
 INV_CLASS_MAP = {value: key for key, value in CLASS_MAP.items()}
 
+BRAIN_REGIONS = ("cortex", "striatum", "cerebellum", "unknown")
+REGION_TO_INDEX = {name: idx for idx, name in enumerate(BRAIN_REGIONS)}
+
 
 @dataclass
 class FileMeta:
@@ -28,6 +32,7 @@ class FileMeta:
     mouse_id: str
     sample_id: str
     region: str
+    center: str
 
 
 class RamanDataset:
@@ -51,6 +56,13 @@ class RamanDataset:
         if "cerebellum" in name:
             return "cerebellum"
         return "unknown"
+
+    @staticmethod
+    def infer_center(filename: str) -> Optional[str]:
+        match = re.search(r"center(\d+)", filename.lower())
+        if match:
+            return match.group(1)
+        return None
 
     @staticmethod
     def _should_skip_file(txt_path: Path) -> Tuple[bool, str]:
@@ -84,6 +96,11 @@ class RamanDataset:
                     print(f"[SKIP] {reason}: {txt_path}")
                     continue
 
+                center = cls.infer_center(txt_path.name)
+                if center is None:
+                    print(f"[SKIP] missing center in filename: {txt_path}")
+                    continue
+
                 metas.append(
                     FileMeta(
                         filepath=str(txt_path),
@@ -92,6 +109,7 @@ class RamanDataset:
                         mouse_id=txt_path.parent.name,
                         sample_id=txt_path.stem,
                         region=cls.infer_region(txt_path.name),
+                        center=center,
                     )
                 )
 
@@ -172,6 +190,15 @@ class RamanDataset:
             return np.nanmean(x, axis=0)
         raise ValueError(f"Unknown aggregation method: {method}")
 
+    @staticmethod
+    def build_region_onehot(regions: List[str]) -> np.ndarray:
+        x_region = np.zeros((len(regions), len(BRAIN_REGIONS)), dtype=float)
+        for row_idx, region in enumerate(regions):
+            region_name = region if region in REGION_TO_INDEX else "unknown"
+            col_idx = REGION_TO_INDEX[region_name]
+            x_region[row_idx, col_idx] = 1.0
+        return x_region
+
     def load(
         self,
         use_cache: bool = True,
@@ -219,6 +246,7 @@ class RamanDataset:
                     "mouse_id": meta.mouse_id,
                     "sample_id": meta.sample_id,
                     "region": meta.region,
+                    "center": meta.center,
                     "n_x": len(x_unique),
                     "n_y": len(y_unique),
                     "n_pixels_valid": len(x_pixels),
@@ -300,6 +328,15 @@ class RamanDataset:
             item["X_pixels"] = np.vstack(new_x)
             item["X_agg"] = cls.aggregate_spectra(item["X_pixels"], method="median")
 
+    @staticmethod
+    def group_raw_data_by_center(raw_data: Dict[str, dict]) -> Dict[str, Dict[str, dict]]:
+        grouped: Dict[str, Dict[str, dict]] = {}
+        for file_id, item in raw_data.items():
+            center = str(item["meta"].center)
+            grouped.setdefault(center, {})
+            grouped[center][file_id] = item
+        return grouped
+
     def prepare_raw_data(
         self,
         raw_data: Dict[str, dict],
@@ -314,18 +351,18 @@ class RamanDataset:
             self.raw_data = aligned_raw
             return aligned_raw
 
-        if self.check_wave_consistency(raw_data):
-            if use_cache:
-                print(f"[CACHE] Saving aligned raw data to: {cache_path}")
-                joblib.dump(raw_data, cache_path, compress=3)
-            self.raw_data = raw_data
-            return raw_data
+        grouped = self.group_raw_data_by_center(raw_data)
 
-        first_key = next(iter(raw_data))
-        reference_wave = raw_data[first_key]["wave"]
-        print("[INFO] Interpolating all spectra to the reference wave axis...")
-        self.interpolate_to_reference(raw_data, reference_wave)
-        self.check_wave_consistency(raw_data)
+        for center, center_data in grouped.items():
+            print(f"[STEP] Checking wave consistency for center={center}...")
+            if self.check_wave_consistency(center_data):
+                continue
+
+            first_key = next(iter(center_data))
+            reference_wave = center_data[first_key]["wave"]
+            print(f"[INFO] Interpolating spectra to reference wave axis for center={center}...")
+            self.interpolate_to_reference(center_data, reference_wave)
+            self.check_wave_consistency(center_data)
 
         if use_cache:
             print(f"[CACHE] Saving aligned raw data to: {cache_path}")
@@ -342,12 +379,15 @@ class RamanDataset:
         use_cache: bool = True,
         force_rebuild: bool = False,
         cache_tag: str = "default",
+        center_filter: Optional[str] = None,
+        include_region_feature: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
         if self.raw_data is None:
             raise RuntimeError("Call load() before building datasets")
 
+        center_name = "all" if center_filter is None else str(center_filter)
         safe_tag = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in cache_tag)
-        cache_path = self._get_cache_dir() / f"samplewise_{self.root_dir.name}_{safe_tag}.joblib"
+        cache_path = self._get_cache_dir() / f"samplewise_{self.root_dir.name}_center{center_name}_{safe_tag}.joblib"
 
         if use_cache and cache_path.exists() and not force_rebuild:
             print(f"[CACHE] Loading samplewise dataset from: {cache_path}")
@@ -360,10 +400,14 @@ class RamanDataset:
                 payload["file_ids"],
             )
 
-        x_list, y_list, groups, file_ids = [], [], [], []
+        x_spec_list, y_list, groups, file_ids, region_list = [], [], [], [], []
         wave_ref = None
 
         for file_id, item in self.raw_data.items():
+            file_center = str(item["meta"].center)
+            if center_filter is not None and file_center != str(center_filter):
+                continue
+
             wave = item["wave"]
             x_pixels = item["X_pixels"]
 
@@ -374,20 +418,29 @@ class RamanDataset:
                 continue
 
             x_agg = self.aggregate_spectra(x_pixels, method=agg_method)
-            x_list.append(x_agg)
+            x_spec_list.append(x_agg)
             y_list.append(item["meta"].label)
             groups.append(item["meta"].mouse_id)
             file_ids.append(file_id)
+            region_list.append(item["meta"].region)
 
             if wave_ref is None:
                 wave_ref = wave
 
-        if not x_list:
-            raise RuntimeError("No samplewise data could be built.")
+        if not x_spec_list:
+            raise RuntimeError(f"No samplewise data could be built for center={center_name}")
+
+        x_spec = np.vstack(x_spec_list)
+
+        if include_region_feature:
+            x_region = self.build_region_onehot(region_list)
+            x_final = np.hstack([x_spec, x_region])
+        else:
+            x_final = x_spec
 
         payload = {
             "wave_ref": wave_ref,
-            "X": np.vstack(x_list),
+            "X": x_final,
             "y": np.array(y_list),
             "groups": np.array(groups),
             "file_ids": file_ids,
