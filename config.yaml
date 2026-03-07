@@ -46,46 +46,102 @@ training:
     samplewise: true
     pixelwise: false
 
-  models:
-    linear_svm: false
-    pca_svm: false
-    rf: false
-    extra_trees: true
-    catboost: true
-    pls_logreg: true
-    logreg: false
+  centers:
+    "1500":
+      enabled: true
+      feature_config:
+        sample_agg_features: [median, mean, std, q25, q75]
+        append_first_derivative: true
+        include_region_feature: false
 
-  ensemble:
+      models:
+        extra_trees: true
+        catboost: true
+        pls_logreg: true
+        linear_svm: false
+        pca_svm: false
+        rf: false
+        logreg: false
+
+      ensemble:
+        enabled: true
+        name: ensemble_center1500
+        members: [extra_trees, catboost, pls_logreg]
+        weighting: oof_macro_f1
+
+      extra_trees:
+        n_estimators: 1200
+        max_depth: null
+        min_samples_split: 4
+        min_samples_leaf: 2
+        max_features: sqrt
+        class_weight: balanced_subsample
+
+      catboost:
+        iterations: 600
+        depth: 5
+        learning_rate: 0.04
+        thread_count: 1
+        l2_leaf_reg: 5.0
+        subsample: 0.9
+        auto_class_weights: Balanced
+
+      pls_logreg:
+        n_components_grid: [2, 3, 5, 8, 10, 15, 20]
+        C: 1.0
+        class_weight: balanced
+        max_iter: 5000
+
+    "2900":
+      enabled: true
+      feature_config:
+        sample_agg_features: [median, mean, std, q25, q75]
+        append_first_derivative: true
+        include_region_feature: false
+
+      models:
+        extra_trees: true
+        catboost: true
+        pls_logreg: true
+        linear_svm: false
+        pca_svm: false
+        rf: false
+        logreg: false
+
+      ensemble:
+        enabled: true
+        name: ensemble_center2900
+        members: [extra_trees, catboost, pls_logreg]
+        weighting: oof_macro_f1
+
+      extra_trees:
+        n_estimators: 900
+        max_depth: null
+        min_samples_split: 4
+        min_samples_leaf: 3
+        max_features: sqrt
+        class_weight: balanced_subsample
+
+      catboost:
+        iterations: 450
+        depth: 4
+        learning_rate: 0.05
+        thread_count: 1
+        l2_leaf_reg: 7.0
+        subsample: 0.9
+        auto_class_weights: Balanced
+
+      pls_logreg:
+        n_components_grid: [2, 3, 5, 8, 10, 15, 20]
+        C: 1.0
+        class_weight: balanced
+        max_iter: 5000
+
+  late_fusion:
     enabled: true
-    name: ensemble_soft
-    members: [extra_trees, catboost, pls_logreg]
-    weights:
-      extra_trees: 1.0
-      catboost: 1.0
-      pls_logreg: 1.0
-
-  extra_trees:
-    n_estimators: 1000
-    max_depth: null
-    min_samples_split: 4
-    min_samples_leaf: 2
-    max_features: sqrt
-    class_weight: balanced_subsample
-
-  catboost:
-    iterations: 500
-    depth: 5
-    learning_rate: 0.05
-    thread_count: 1
-    l2_leaf_reg: 5.0
-    subsample: 0.9
-    auto_class_weights: Balanced
-
-  pls_logreg:
-    n_components: 8
-    C: 1.0
-    class_weight: balanced
-    max_iter: 5000
+    name: late_fusion_1500_2900
+    centers: [1500, 2900]
+    weighting: oof_macro_f1
 
 interpretation:
   rf_top_k: 30
